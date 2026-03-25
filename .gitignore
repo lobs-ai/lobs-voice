@@ -8,9 +8,6 @@ tts/__pycache__/
 tts/*.pyc
 tts/.venv/
 
-# Voice files (user-uploaded)
-tts/voices/*.wav
-!tts/voices/.gitkeep
 
 # Logs
 logs/
