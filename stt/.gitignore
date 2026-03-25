@@ -1,0 +1,3 @@
+whisper.cpp/
+models/*.bin
+models/*.mlmodelc/
