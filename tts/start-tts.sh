@@ -25,4 +25,12 @@ echo "  Voices dir: ${SCRIPT_DIR}/voices"
 echo "═══════════════════════════════════════════════"
 
 cd "$SCRIPT_DIR"
-exec python server.py --host "$HOST" --port "$PORT"
+
+# Use the local venv if it exists
+if [ -f "${SCRIPT_DIR}/.venv/bin/python" ]; then
+  PYTHON="${SCRIPT_DIR}/.venv/bin/python"
+else
+  PYTHON="python3"
+fi
+
+exec "$PYTHON" server.py --host "$HOST" --port "$PORT"

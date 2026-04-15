@@ -11,12 +11,13 @@ Endpoints:
 import argparse
 import io
 import logging
+import struct
 import time
+import wave
 from pathlib import Path
 from typing import Optional
 
 import torch
-import torchaudio
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -108,11 +109,18 @@ def _tensor_to_wav_bytes(wav_tensor: torch.Tensor) -> bytes:
     """Convert a (1, N) or (N,) float tensor to WAV bytes at 24 kHz."""
     if wav_tensor.dim() == 1:
         wav_tensor = wav_tensor.unsqueeze(0)
-    # Move to CPU for torchaudio.save
     wav_tensor = wav_tensor.detach().cpu()
 
+    # Convert float [-1, 1] → int16 PCM
+    pcm = (wav_tensor * 32767).clamp(-32768, 32767).to(torch.int16)
+    pcm_bytes = pcm.numpy().tobytes()
+
     buf = io.BytesIO()
-    torchaudio.save(buf, wav_tensor, SAMPLE_RATE, format="wav")
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(pcm_bytes)
     buf.seek(0)
     return buf.read()
 
@@ -191,15 +199,30 @@ async def create_speech(req: SpeechRequest):
     )
 
     t0 = time.perf_counter()
-    try:
-        audio_prompt = str(voice_path) if voice_path is not None else None
-        wav_tensor = model.generate(
-            text=req.input,
-            audio_prompt_path=audio_prompt,
-        )
-    except Exception as exc:
-        logger.exception("Generation failed")
-        raise HTTPException(status_code=500, detail=f"Generation failed: {exc}")
+    audio_prompt = str(voice_path) if voice_path is not None else None
+
+    # Retry once on failure — MPS can get stale after idle time (Broken pipe, etc.)
+    last_exc = None
+    for attempt in range(2):
+        try:
+            wav_tensor = model.generate(
+                text=req.input,
+                audio_prompt_path=audio_prompt,
+            )
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0:
+                logger.warning("Generation failed (attempt 1), retrying: %s", exc)
+                # Clear MPS cache and retry
+                if device == "mps":
+                    torch.mps.empty_cache()
+            else:
+                logger.exception("Generation failed after retry")
+
+    if last_exc is not None:
+        raise HTTPException(status_code=500, detail=f"Generation failed: {last_exc}")
 
     elapsed = time.perf_counter() - t0
     logger.info("Generated in %.3fs", elapsed)
